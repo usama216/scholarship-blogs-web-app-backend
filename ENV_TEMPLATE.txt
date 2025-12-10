@@ -1,0 +1,22 @@
+# Copy this file content and create backend/.env file
+# Replace all values with your actual Supabase credentials
+
+PORT=5000
+NODE_ENV=development
+
+SUPABASE_URL=https://xxxxxxxxxxx.supabase.co
+SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZi...
+SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS...
+
+SUPABASE_BUCKET=images
+CORS_ORIGINS=http://localhost:3000
+
+
+HOW TO USE:
+===========
+1. Create a new file: backend/.env
+2. Copy above content
+3. Replace with your actual keys from Supabase Dashboard
+4. Save the file
+5. Run: npm run dev
+
