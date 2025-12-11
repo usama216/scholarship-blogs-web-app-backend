@@ -26,10 +26,65 @@ const UPLOAD_BUCKET = process.env.SUPABASE_BUCKET || 'images'
 const upload = multer({ storage: multer.memoryStorage() })
 
 // Middleware
-app.use(cors())
+// CORS configuration - allow production frontend URL
+const allowedOrigins = process.env.CORS_ORIGINS
+  ? process.env.CORS_ORIGINS.split(',').map(origin => origin.trim())
+  : ['http://localhost:3000']
+
+// Add Vercel preview URLs dynamically
+if (process.env.VERCEL) {
+  allowedOrigins.push(`https://${process.env.VERCEL_URL}`)
+}
+
+const corsOptions = {
+  origin: function (origin: string | undefined, callback: Function) {
+    // Allow requests with no origin (mobile apps, curl, etc.)
+    if (!origin) return callback(null, true)
+    
+    // Check if origin is in allowed list
+    if (allowedOrigins.some(allowed => {
+      if (allowed.includes('*')) {
+        // Support wildcard subdomains
+        const pattern = allowed.replace('*.', '.*\\.')
+        return new RegExp(`^https?://${pattern}`).test(origin)
+      }
+      return origin === allowed || origin.startsWith(allowed)
+    })) {
+      callback(null, true)
+    } else {
+      // In development, allow all origins
+      if (process.env.NODE_ENV !== 'production') {
+        callback(null, true)
+      } else {
+        callback(new Error('Not allowed by CORS'))
+      }
+    }
+  },
+  credentials: true,
+  optionsSuccessStatus: 200
+}
+app.use(cors(corsOptions))
 app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
 app.use(morgan('dev'))
+
+// Root route - Welcome message
+app.get('/', (req: Request, res: Response) => {
+  res.json({ 
+    message: 'Welcome to Daily Better Journey API!',
+    status: 'running',
+    version: '1.0.0',
+    endpoints: {
+      health: '/api/health',
+      posts: '/api/posts',
+      categories: '/api/categories',
+      countries: '/api/countries',
+      newsletter: '/api/newsletter/subscribe',
+      documentation: 'Check README.md for full API documentation'
+    },
+    timestamp: new Date().toISOString()
+  })
+})
 
 // Health check endpoint
 app.get('/api/health', (req: Request, res: Response) => {
@@ -917,10 +972,17 @@ const initializeBucket = async () => {
   }
 }
 
-// Start server
-app.listen(PORT, async () => {
-  console.log(`🚀 Server is running on port ${PORT}`)
-  console.log(`📡 Environment: ${process.env.NODE_ENV || 'development'}`)
-  await initializeBucket()
-})
+// Start server only if not in serverless environment (Vercel)
+if (process.env.VERCEL !== '1') {
+  app.listen(PORT, async () => {
+    console.log(`🚀 Server is running on port ${PORT}`)
+    console.log(`📡 Environment: ${process.env.NODE_ENV || 'development'}`)
+    await initializeBucket()
+  })
+} else {
+  // In serverless environment, initialize bucket on first request
+  initializeBucket().catch(console.error)
+}
 
+// Export the app for Vercel serverless functions
+export default app
