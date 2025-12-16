@@ -5,6 +5,7 @@ import dotenv from 'dotenv'
 import { createClient } from '@supabase/supabase-js'
 import multer from 'multer'
 import path from 'path'
+import { sendNewsletterEmail } from './services/emailService'
 
 // Load environment variables
 dotenv.config()
@@ -112,14 +113,14 @@ app.get('/api/countries', async (req: Request, res: Response) => {
 
 app.post('/api/countries', async (req: Request, res: Response) => {
   try {
-    const { name, code, flag_emoji, region, description } = req.body
+    const { name, code, flag_emoji, flag_image, region, description } = req.body
     if (!name || !code) return res.status(400).json({ success: false, message: 'Name and code are required' })
     
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')
 
     const { data, error } = await supabase
       .from('countries')
-      .insert([{ name, slug, code, flag_emoji, region, description }])
+      .insert([{ name, slug, code, flag_emoji, flag_image, region, description }])
       .select()
       .single()
 
@@ -133,7 +134,7 @@ app.post('/api/countries', async (req: Request, res: Response) => {
 app.put('/api/countries/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params
-    const { name, code, flag_emoji, region, description } = req.body
+    const { name, code, flag_emoji, flag_image, region, description } = req.body
     const updateData: any = {}
     
     if (name !== undefined) {
@@ -142,6 +143,7 @@ app.put('/api/countries/:id', async (req: Request, res: Response) => {
     }
     if (code !== undefined) updateData.code = code
     if (flag_emoji !== undefined) updateData.flag_emoji = flag_emoji
+    if (flag_image !== undefined) updateData.flag_image = flag_image
     if (region !== undefined) updateData.region = region
     if (description !== undefined) updateData.description = description
 
@@ -504,6 +506,28 @@ app.post('/api/posts', async (req: Request, res: Response) => {
       await supabase.from('post_degree_levels').insert(degreeLevelLinks)
     }
     
+    // Send email to subscribers if post is published
+    if (data.status === 'published') {
+      try {
+        // Get all active newsletter subscribers
+        const { data: subscribers } = await supabase
+          .from('newsletter_subscribers')
+          .select('email')
+          .eq('is_active', true)
+        
+        if (subscribers && subscribers.length > 0) {
+          // Send emails asynchronously (don't wait for it)
+          sendNewsletterEmail(data, subscribers).catch(err => {
+            console.error('Error sending newsletter emails:', err)
+          })
+          console.log(`Newsletter email queued for ${subscribers.length} subscribers`)
+        }
+      } catch (emailError: any) {
+        console.error('Failed to send newsletter emails:', emailError.message)
+        // Don't fail the request if email fails
+      }
+    }
+    
     res.json({ 
       success: true, 
       message: 'Post created successfully',
@@ -576,6 +600,15 @@ app.put('/api/posts/:id', async (req: Request, res: Response) => {
     if (faq_data !== undefined) updateData.faq_data = faq_data
     if (scheduled_publish_at !== undefined) updateData.scheduled_publish_at = scheduled_publish_at
     
+    // Get current post to check if status is changing to published
+    const { data: currentPost } = await supabase
+      .from('posts')
+      .select('status')
+      .eq('id', id)
+      .single()
+    
+    const wasJustPublished = status === 'published' && currentPost?.status !== 'published'
+    
     const { data, error } = await supabase
       .from('posts')
       .update(updateData)
@@ -638,6 +671,28 @@ app.put('/api/posts/:id', async (req: Request, res: Response) => {
           degree_level_id: degreeId
         }))
         await supabase.from('post_degree_levels').insert(degreeLevelLinks)
+      }
+    }
+    
+    // Send email to subscribers if post was just published (status changed from draft to published)
+    if (wasJustPublished) {
+      try {
+        // Get all active newsletter subscribers
+        const { data: subscribers } = await supabase
+          .from('newsletter_subscribers')
+          .select('email')
+          .eq('is_active', true)
+        
+        if (subscribers && subscribers.length > 0) {
+          // Send emails asynchronously (don't wait for it)
+          sendNewsletterEmail(data, subscribers).catch(err => {
+            console.error('Error sending newsletter emails:', err)
+          })
+          console.log(`Newsletter email queued for ${subscribers.length} subscribers`)
+        }
+      } catch (emailError: any) {
+        console.error('Failed to send newsletter emails:', emailError.message)
+        // Don't fail the request if email fails
       }
     }
     
@@ -734,10 +789,44 @@ app.post('/api/newsletter/subscribe', async (req: Request, res: Response) => {
       })
     }
     
+    // Check if already subscribed
+    const { data: existing } = await supabase
+      .from('newsletter_subscribers')
+      .select('id, is_active')
+      .eq('email', email.toLowerCase())
+      .single()
+    
+    if (existing) {
+      // If exists but inactive, reactivate it
+      if (!existing.is_active) {
+        const { data, error } = await supabase
+          .from('newsletter_subscribers')
+          .update({ is_active: true, subscribed_at: new Date().toISOString(), unsubscribed_at: null })
+          .eq('id', existing.id)
+          .select()
+          .single()
+        
+        if (error) throw error
+        return res.json({ 
+          success: true, 
+          message: 'Successfully resubscribed to newsletter',
+          data 
+        })
+      }
+      
+      // Already subscribed and active
+      return res.json({ 
+        success: true, 
+        message: 'You are already subscribed to our newsletter',
+        data: existing 
+      })
+    }
+    
     const { data, error } = await supabase
       .from('newsletter_subscribers')
-      .insert([{ email }])
+      .insert([{ email: email.toLowerCase(), is_active: true }])
       .select()
+      .single()
     
     if (error) throw error
     
@@ -752,6 +841,94 @@ app.post('/api/newsletter/subscribe', async (req: Request, res: Response) => {
       success: false, 
       message: 'Failed to subscribe',
       error: error.message 
+    })
+  }
+})
+
+// Get all newsletter subscribers (admin only)
+app.get('/api/newsletter/subscribers', async (req: Request, res: Response) => {
+  try {
+    const { active_only, page = 1, limit = 100 } = req.query
+    
+    let query = supabase
+      .from('newsletter_subscribers')
+      .select('*', { count: 'exact' })
+      .order('subscribed_at', { ascending: false })
+    
+    if (active_only === 'true') {
+      query = query.eq('is_active', true)
+    }
+    
+    const pageNum = parseInt(page as string)
+    const limitNum = parseInt(limit as string)
+    const from = (pageNum - 1) * limitNum
+    const to = from + limitNum - 1
+    
+    query = query.range(from, to)
+    
+    const { data, error, count } = await query
+    
+    if (error) throw error
+    
+    res.json({
+      success: true,
+      data: data || [],
+      total: count || 0,
+      page: pageNum,
+      limit: limitNum
+    })
+  } catch (error: any) {
+    console.error('Get subscribers error:', error)
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get subscribers',
+      error: error.message
+    })
+  }
+})
+
+// Unsubscribe from newsletter
+app.post('/api/newsletter/unsubscribe', async (req: Request, res: Response) => {
+  try {
+    const { email } = req.body
+    
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email is required'
+      })
+    }
+    
+    const { data, error } = await supabase
+      .from('newsletter_subscribers')
+      .update({
+        is_active: false,
+        unsubscribed_at: new Date().toISOString()
+      })
+      .eq('email', email.toLowerCase())
+      .select()
+      .single()
+    
+    if (error) throw error
+    
+    if (!data) {
+      return res.status(404).json({
+        success: false,
+        message: 'Email not found in subscribers list'
+      })
+    }
+    
+    res.json({
+      success: true,
+      message: 'Successfully unsubscribed from newsletter',
+      data
+    })
+  } catch (error: any) {
+    console.error('Unsubscribe error:', error)
+    res.status(500).json({
+      success: false,
+      message: 'Failed to unsubscribe',
+      error: error.message
     })
   }
 })
