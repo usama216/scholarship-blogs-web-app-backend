@@ -78,6 +78,7 @@ app.get('/', (req: Request, res: Response) => {
     endpoints: {
       health: '/api/health',
       posts: '/api/posts',
+      jobs: '/api/jobs',
       categories: '/api/categories',
       countries: '/api/countries',
       newsletter: '/api/newsletter/subscribe',
@@ -774,6 +775,237 @@ app.patch('/api/posts/:id/status', async (req: Request, res: Response) => {
       message: 'Failed to update post status',
       error: error.message 
     })
+  }
+})
+
+// ============ JOBS ROUTES ============
+// Employment types (read-only)
+app.get('/api/employment-types', async (req: Request, res: Response) => {
+  try {
+    const { data, error } = await supabase
+      .from('employment_types')
+      .select('*')
+      .order('name', { ascending: true })
+    if (error) throw error
+    res.json({ success: true, data })
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: 'Failed to fetch employment types', error: error.message })
+  }
+})
+
+// Get all jobs (admin sees all, public could filter by status in frontend)
+app.get('/api/jobs', async (req: Request, res: Response) => {
+  try {
+    const { location_type } = req.query
+    let query = supabase
+      .from('jobs')
+      .select(`
+        *,
+        countries:country_id(name, slug, flag_emoji),
+        employment_types:employment_type_id(name, slug)
+      `)
+      .order('created_at', { ascending: false })
+
+    if (location_type && (location_type === 'national' || location_type === 'international')) {
+      query = query.eq('location_type', location_type)
+    }
+
+    const { data, error } = await query
+    if (error) throw error
+    res.json({ success: true, data: data || [] })
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: 'Failed to fetch jobs', error: error.message })
+  }
+})
+
+// Get job by slug (must be before :id to avoid "slug" being parsed as id)
+app.get('/api/jobs/slug/:slug', async (req: Request, res: Response) => {
+  try {
+    const { slug } = req.params
+    const { data, error } = await supabase
+      .from('jobs')
+      .select(`
+        *,
+        countries:country_id(name, slug, flag_emoji),
+        employment_types:employment_type_id(name, slug)
+      `)
+      .eq('slug', slug)
+      .single()
+    if (error) throw error
+    if (!data) return res.status(404).json({ success: false, message: 'Job not found' })
+    res.json({ success: true, data })
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: 'Failed to fetch job', error: error.message })
+  }
+})
+
+// Get single job by id
+app.get('/api/jobs/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params
+    const { data, error } = await supabase
+      .from('jobs')
+      .select(`
+        *,
+        countries:country_id(name, slug, flag_emoji),
+        employment_types:employment_type_id(name, slug)
+      `)
+      .eq('id', id)
+      .single()
+    if (error) throw error
+    if (!data) return res.status(404).json({ success: false, message: 'Job not found' })
+    res.json({ success: true, data })
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: 'Failed to fetch job', error: error.message })
+  }
+})
+
+// Create job
+app.post('/api/jobs', async (req: Request, res: Response) => {
+  try {
+    const {
+      title, slug, excerpt, content, featured_image, is_featured, status,
+      company_name, company_logo, location_type, country_id, employment_type_id,
+      salary_range, remote_work, application_deadline, apply_link, contact_email,
+      job_requirements, job_responsibilities, benefits, experience_level,
+      meta_description, meta_keywords, seo_title, scheduled_publish_at
+    } = req.body
+
+    if (!title || !content || !company_name || !location_type) {
+      return res.status(400).json({ success: false, message: 'Title, content, company name, and location type are required' })
+    }
+
+    const generatedSlug = slug || title.toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/(^-|-$)/g, '')
+
+    const jobData: any = {
+      title,
+      slug: generatedSlug,
+      excerpt: excerpt || content.substring(0, 200),
+      content,
+      featured_image: featured_image || null,
+      is_featured: !!is_featured,
+      status: status || 'draft',
+      author_id: 'admin',
+      views: 0,
+      meta_description: meta_description || null,
+      meta_keywords: meta_keywords || null,
+      seo_title: seo_title || null,
+      company_name,
+      company_logo: company_logo || null,
+      location_type: location_type === 'national' || location_type === 'international' ? location_type : 'national',
+      country_id: country_id || null,
+      employment_type_id: employment_type_id || null,
+      salary_range: salary_range || null,
+      remote_work: remote_work || null,
+      application_deadline: application_deadline || null,
+      apply_link: apply_link || null,
+      contact_email: contact_email || null,
+      job_requirements: job_requirements || null,
+      job_responsibilities: job_responsibilities || null,
+      benefits: benefits || null,
+      experience_level: experience_level || null,
+      scheduled_publish_at: scheduled_publish_at || null
+    }
+
+    const { data, error } = await supabase
+      .from('jobs')
+      .insert([jobData])
+      .select()
+      .single()
+    if (error) throw error
+    res.json({ success: true, message: 'Job created successfully', data })
+  } catch (error: any) {
+    console.error('Create job error:', error)
+    res.status(500).json({ success: false, message: 'Failed to create job', error: error.message })
+  }
+})
+
+// Update job
+app.put('/api/jobs/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params
+    const {
+      title, slug, excerpt, content, featured_image, is_featured, status,
+      company_name, company_logo, location_type, country_id, employment_type_id,
+      salary_range, remote_work, application_deadline, apply_link, contact_email,
+      job_requirements, job_responsibilities, benefits, experience_level,
+      meta_description, meta_keywords, seo_title, scheduled_publish_at
+    } = req.body
+
+    const updateData: any = { updated_at: new Date().toISOString() }
+    if (title) updateData.title = title
+    if (slug) updateData.slug = slug
+    if (excerpt !== undefined) updateData.excerpt = excerpt
+    if (content) updateData.content = content
+    if (featured_image !== undefined) updateData.featured_image = featured_image
+    if (is_featured !== undefined) updateData.is_featured = !!is_featured
+    if (status) updateData.status = status
+    if (company_name) updateData.company_name = company_name
+    if (company_logo !== undefined) updateData.company_logo = company_logo
+    if (location_type) updateData.location_type = location_type
+    if (country_id !== undefined) updateData.country_id = country_id
+    if (employment_type_id !== undefined) updateData.employment_type_id = employment_type_id
+    if (salary_range !== undefined) updateData.salary_range = salary_range
+    if (remote_work !== undefined) updateData.remote_work = remote_work
+    if (application_deadline !== undefined) updateData.application_deadline = application_deadline
+    if (apply_link !== undefined) updateData.apply_link = apply_link
+    if (contact_email !== undefined) updateData.contact_email = contact_email
+    if (job_requirements !== undefined) updateData.job_requirements = job_requirements
+    if (job_responsibilities !== undefined) updateData.job_responsibilities = job_responsibilities
+    if (benefits !== undefined) updateData.benefits = benefits
+    if (experience_level !== undefined) updateData.experience_level = experience_level
+    if (meta_description !== undefined) updateData.meta_description = meta_description
+    if (meta_keywords !== undefined) updateData.meta_keywords = meta_keywords
+    if (seo_title !== undefined) updateData.seo_title = seo_title
+    if (scheduled_publish_at !== undefined) updateData.scheduled_publish_at = scheduled_publish_at
+
+    const { data, error } = await supabase
+      .from('jobs')
+      .update(updateData)
+      .eq('id', id)
+      .select()
+      .single()
+    if (error) throw error
+    if (!data) return res.status(404).json({ success: false, message: 'Job not found' })
+    res.json({ success: true, message: 'Job updated successfully', data })
+  } catch (error: any) {
+    console.error('Update job error:', error)
+    res.status(500).json({ success: false, message: 'Failed to update job', error: error.message })
+  }
+})
+
+// Delete job
+app.delete('/api/jobs/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params
+    const { error } = await supabase.from('jobs').delete().eq('id', id)
+    if (error) throw error
+    res.json({ success: true, message: 'Job deleted successfully' })
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: 'Failed to delete job', error: error.message })
+  }
+})
+
+// Update job status
+app.patch('/api/jobs/:id/status', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params
+    const { status } = req.body
+    if (!status || !['draft', 'published'].includes(status)) {
+      return res.status(400).json({ success: false, message: 'Valid status (draft or published) is required' })
+    }
+    const { data, error } = await supabase
+      .from('jobs')
+      .update({ status, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select()
+      .single()
+    if (error) throw error
+    res.json({ success: true, message: 'Job status updated', data })
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: 'Failed to update job status', error: error.message })
   }
 })
 
